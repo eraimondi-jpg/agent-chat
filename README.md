@@ -16,18 +16,31 @@ that injects a turn into the recipient so it actually sees the question and repl
 ## Install
 
 ```bash
-ln -sf ~/agent-chat/agent-chat ~/.local/bin/agent-chat   # ~/.local/bin must be on PATH
+ln -sf /path/to/agent-chat/agent-chat ~/.local/bin/agent-chat   # ~/.local/bin must be on PATH
 ```
+
+For **hands-free** operation (agents replying without a permission prompt), each machine
+also needs two one-time entries under `~/.claude/`:
+
+1. Allow the command — in `~/.claude/settings.json`:
+   ```json
+   { "permissions": { "allow": ["Bash(agent-chat:*)"] } }
+   ```
+   Without it, Claude Code's auto-mode classifier blocks `agent-chat reply` as an
+   external write and the recipient stalls at a prompt.
+2. Tell agents to honor incoming messages — append to `~/.claude/CLAUDE.md`:
+   > If you receive a message beginning with `[agent-chat]`, it's another agent asking
+   > you a question — answer it by running the `agent-chat reply ...` command it shows.
 
 ## Use
 
 ```bash
 # Ask another agent (blocks, polling, up to --timeout seconds):
-agent-chat ask "Agile Newton" "which restitution did you use for the G1 feet?"
+agent-chat ask "data-pipeline" "which schema version did you settle on?"
 
 # On the recipient side (the doorbell tells it exactly this):
 agent-chat inbox                       # list open questions for me
-agent-chat reply <msg_id> "0.4"        # answer one
+agent-chat reply <msg_id> "v3, after the migration"
 
 # Retrieve a reply that arrived after a timeout:
 agent-chat replies
@@ -68,7 +81,8 @@ interactive aoe sessions.
 - **Addressing** — recipients resolved against `aoe list`; pass a title, id, id-prefix,
   or an explicit `id:title`.
 - **Doorbell** — `aoe send <recipient> "..."` wakes an idle/stopped session
-  (auto-revives). The doorbell text is self-describing, so recipients need no setup.
+  (auto-revives). The doorbell text is self-describing, so recipients need no prior
+  knowledge of the protocol (see Install for the one-time permission rule).
 
 ## Test
 
@@ -86,3 +100,7 @@ Tests run without an aoe daemon (identities via `--from`, recipients via `id:tit
   [MCP Agent Mail](https://mcpagentmail.com/).
 
 See [`docs/2026-06-25-agent-chat-design.md`](docs/2026-06-25-agent-chat-design.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
