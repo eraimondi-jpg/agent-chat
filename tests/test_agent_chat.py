@@ -32,12 +32,12 @@ class AgentChatTest(unittest.TestCase):
             except OSError:
                 pass
 
-    def run_cli(self, *args, identity=None):
+    def run_cli(self, *args, identity=None, extra_env=None):
         cmd = [sys.executable, CLI]
         if identity:
             cmd += ["--from", identity]
         cmd += list(args)
-        env = {**os.environ, "AGENT_CHAT_DB": self.db}
+        env = {**os.environ, "AGENT_CHAT_DB": self.db, **(extra_env or {})}
         return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     def question_id_for(self, identity):
@@ -56,7 +56,7 @@ class AgentChatTest(unittest.TestCase):
         # A asks, times out fast -> pending
         ask = self.run_cli("ask", B, "what restitution?", "--timeout", "1",
                            "--no-doorbell", identity=A)
-        self.assertEqual(ask.returncode, 0)
+        self.assertEqual(ask.returncode, 3)  # 3 == no answer (pending)
         self.assertIn("pending", ask.stderr)
 
         # B sees it in inbox
@@ -109,6 +109,44 @@ class AgentChatTest(unittest.TestCase):
         out = self.run_cli("reply", "deadbeef", "x", "--no-doorbell", identity=B)
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("no question", out.stderr)
+
+    def test_ask_json_pending(self):
+        out = self.run_cli("ask", B, "q?", "--timeout", "1", "--no-doorbell", "--json",
+                           identity=A)
+        self.assertEqual(out.returncode, 3)
+        obj = json.loads(out.stdout)
+        self.assertEqual(obj["status"], "pending")
+        self.assertIsNone(obj["reply"])
+        self.assertTrue(obj["msg_id"])
+
+    def test_ask_json_answered(self):
+        def delayed_reply():
+            for _ in range(40):
+                qid = self.question_id_for(B)
+                if qid:
+                    self.run_cli("reply", qid, "JSON-ANS", "--no-doorbell", identity=B)
+                    return
+                time.sleep(0.25)
+
+        t = threading.Thread(target=delayed_reply)
+        t.start()
+        out = self.run_cli("ask", B, "q?", "--timeout", "6", "--no-doorbell", "--json",
+                           identity=A)
+        t.join()
+        self.assertEqual(out.returncode, 0)
+        obj = json.loads(out.stdout)
+        self.assertEqual(obj["status"], "answered")
+        self.assertEqual(obj["reply"], "JSON-ANS")
+        self.assertEqual(obj["from"], "AgentB")
+
+    def test_no_revive_skips_when_undeliverable(self):
+        # doorbell fails (simulated stopped recipient) + --no-revive -> skip, don't block
+        out = self.run_cli("ask", B, "q?", "--no-revive", "--json", "--timeout", "30",
+                           identity=A, extra_env={"AGENT_CHAT_DOORBELL_FAIL": "1"})
+        self.assertEqual(out.returncode, 3)
+        obj = json.loads(out.stdout)
+        self.assertEqual(obj["status"], "skipped")
+        self.assertIsNone(obj["reply"])
 
 
 if __name__ == "__main__":

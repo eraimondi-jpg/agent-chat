@@ -66,7 +66,13 @@ Three moving parts, all local to the machine:
 
 Single self-contained Python 3 (stdlib only). Verbs: `ask`, `reply`, `inbox`,
 `replies`, `thread`, `whoami`. Test flags: `--from`, `--no-doorbell`,
-`$AGENT_CHAT_DB`.
+`$AGENT_CHAT_DB`, `$AGENT_CHAT_DOORBELL_FAIL`.
+
+**Automated-asker support** (added for the curator integration):
+- `ask --json` → one object `{status, msg_id, thread_id, reply, reply_id?, from?}`,
+  `status` ∈ `answered|pending|skipped`.
+- `ask --no-revive` → don't wake a stopped recipient; return `skipped` immediately.
+- Exit codes: `0` answered · `3` no answer (pending/skipped) · `1` error.
 
 ### Flow (happy path)
 

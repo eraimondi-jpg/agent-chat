@@ -123,13 +123,20 @@ def resolve_recipient(spec):
     die(f"no aoe session matches '{spec}'. Known sessions:\n{_candidates(sessions)}")
 
 
-def doorbell(to_id, text, enabled=True):
+def doorbell(to_id, text, enabled=True, revive=True):
+    """Deliver via `aoe send`. Returns True if delivered. With revive=False, a
+    stopped recipient makes `aoe send` fail loud -> returns False (caller skips)."""
     if not enabled:
-        return
-    out = subprocess.run(["aoe", "send", to_id, text], capture_output=True, text=True)
+        return True
+    if os.environ.get("AGENT_CHAT_DOORBELL_FAIL"):  # test seam
+        return False
+    cmd = ["aoe", "send"] + ([] if revive else ["--no-revive"]) + [to_id, text]
+    out = subprocess.run(cmd, capture_output=True, text=True)
     if out.returncode != 0:
-        print(f"agent-chat: warning: doorbell to {to_id} failed: {out.stderr.strip()}",
+        print(f"agent-chat: doorbell to {to_id} failed: {out.stderr.strip()}",
               file=sys.stderr)
+        return False
+    return True
 
 
 def _insert(conn, **f):
@@ -154,6 +161,32 @@ def _print_reply(row):
     print(row["body"])
 
 
+EXIT_ANSWERED = 0
+EXIT_NO_ANSWER = 3  # pending (timed out) or skipped (undeliverable, --no-revive)
+
+
+def _ask_result(args, status, msg_id, thread_id, reply_row):
+    """Render an `ask` outcome and return its exit code.
+    status: answered (0) | pending (3) | skipped (3)."""
+    if args.json:
+        obj = {"status": status, "msg_id": msg_id, "thread_id": thread_id,
+               "reply": reply_row["body"] if reply_row is not None else None}
+        if reply_row is not None:
+            obj["reply_id"] = reply_row["id"]
+            obj["from"] = reply_row["from_title"]
+        print(json.dumps(obj))
+    elif status == "answered":
+        _print_reply(reply_row)
+    elif status == "skipped":
+        print(f"agent-chat: msg {msg_id[:8]} not delivered (recipient not live, "
+              f"--no-revive) — skipped.", file=sys.stderr)
+    else:
+        print(f"agent-chat: no reply yet — msg {msg_id[:8]} pending. The reply will be "
+              f"delivered to you when it arrives (or run: agent-chat replies).",
+              file=sys.stderr)
+    return EXIT_ANSWERED if status == "answered" else EXIT_NO_ANSWER
+
+
 # ------------------------------------------------------------------------- commands
 def cmd_ask(args):
     conn = connect()
@@ -175,9 +208,15 @@ def cmd_ask(args):
         f"(Another AI agent in the aoe fleet is asking you directly — "
         f"answer from your project's knowledge.)"
     )
-    doorbell(to_id, text, enabled=not args.no_doorbell)
-    print(f"agent-chat: asked {to_title} (msg {msg_id[:8]}); "
-          f"waiting up to {int(args.timeout)}s...", file=sys.stderr)
+    delivered = doorbell(to_id, text, enabled=not args.no_doorbell, revive=not args.no_revive)
+    if not delivered and args.no_revive:
+        with conn:
+            conn.execute("UPDATE messages SET blocking_until=0 WHERE id=?", (msg_id,))
+        return _ask_result(args, "skipped", msg_id, thread_id, None)
+
+    if not args.json:
+        print(f"agent-chat: asked {to_title} (msg {msg_id[:8]}); "
+              f"waiting up to {int(args.timeout)}s...", file=sys.stderr)
 
     while time.time() < deadline:
         row = _find_reply(conn, msg_id)
@@ -185,8 +224,7 @@ def cmd_ask(args):
             with conn:
                 conn.execute("UPDATE messages SET status='consumed' WHERE id=?",
                              (row["id"],))
-            _print_reply(row)
-            return 0
+            return _ask_result(args, "answered", msg_id, thread_id, row)
         time.sleep(POLL_INTERVAL)
 
     # timeout: final check, then arm async fallback
@@ -194,13 +232,9 @@ def cmd_ask(args):
         row = _find_reply(conn, msg_id)
         if row:
             conn.execute("UPDATE messages SET status='consumed' WHERE id=?", (row["id"],))
-            _print_reply(row)
-            return 0
+            return _ask_result(args, "answered", msg_id, thread_id, row)
         conn.execute("UPDATE messages SET blocking_until=0 WHERE id=?", (msg_id,))
-    print(f"agent-chat: no reply yet — msg {msg_id[:8]} pending. The reply will be "
-          f"delivered to you when it arrives (or run: agent-chat replies).",
-          file=sys.stderr)
-    return 0
+    return _ask_result(args, "pending", msg_id, thread_id, None)
 
 
 def cmd_reply(args):
@@ -313,6 +347,10 @@ def main(argv=None):
     a.add_argument("question")
     a.add_argument("--timeout", type=float, default=120.0, help="seconds to block (default 120)")
     a.add_argument("--thread", default=None, help="attach to an existing thread id")
+    a.add_argument("--json", action="store_true",
+                   help="emit one JSON result object: {status,msg_id,thread_id,reply,...}")
+    a.add_argument("--no-revive", action="store_true",
+                   help="don't wake a stopped recipient; skip instead of reviving it")
     a.add_argument("--no-doorbell", action="store_true")
     a.set_defaults(func=cmd_ask)
 

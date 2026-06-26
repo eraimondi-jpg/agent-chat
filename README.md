@@ -41,6 +41,26 @@ If a reply arrives while you're still blocking in `ask`, it returns immediately.
 time out first, the reply is delivered later via an `aoe send` doorbell (and is always
 retrievable with `agent-chat replies`).
 
+## Scripting / automated askers
+
+For headless or automated callers (e.g. the aoe group-context curator):
+
+```bash
+agent-chat ask "<id>" "<q>" --json --no-revive --timeout 60
+```
+
+- `--json` prints one object: `{"status": ..., "msg_id", "thread_id", "reply", and on
+  success "reply_id"+"from"}`. `status` is `answered` | `pending` | `skipped`.
+- `--no-revive` never wakes a *stopped* recipient — it returns `skipped` immediately
+  instead of reviving it (no compute spun up). Live/idle recipients are unaffected.
+- **Exit codes:** `0` answered · `3` no answer (`pending` timed out, or `skipped`) ·
+  `1` error (e.g. unknown recipient). Don't sniff stdout — branch on the exit code or
+  the `status` field.
+
+Headless callers must set `AGENT_CHAT_ID='id:title'` (auto-detect needs a live aoe
+session). A headless one-shot can *ask* but cannot *receive* — recipients must be live
+interactive aoe sessions.
+
 ## How it works
 
 - **Store** — one SQLite DB (WAL) at `$AGENT_CHAT_DB` or `~/.local/share/agent-chat/mail.db`.
