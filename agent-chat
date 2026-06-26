@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""agent-chat — inter-agent messaging for the aoe fleet.
+
+One agent asks another (addressed by aoe session title or id) a question and gets a
+reply back, using a shared SQLite store plus `aoe send` as the wakeup doorbell.
+
+  agent-chat ask "Agile Newton" "which restitution did you use for the G1 feet?"
+  agent-chat inbox
+  agent-chat reply <msg_id> "restitution = 0.4"
+
+Storage:  $AGENT_CHAT_DB  or  ~/.local/share/agent-chat/mail.db
+Identity: $AGENT_CHAT_ID ('id:title')  or  `aoe session current`  or  --from
+"""
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime, timezone
+
+DEFAULT_DB = os.path.expanduser("~/.local/share/agent-chat/mail.db")
+POLL_INTERVAL = 2.0
+
+
+# --------------------------------------------------------------------------- store
+def db_path():
+    return os.environ.get("AGENT_CHAT_DB", DEFAULT_DB)
+
+
+def connect():
+    path = db_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id             TEXT PRIMARY KEY,
+            thread_id      TEXT NOT NULL,
+            from_id        TEXT NOT NULL,
+            from_title     TEXT NOT NULL,
+            to_id          TEXT NOT NULL,
+            to_title       TEXT NOT NULL,
+            kind           TEXT NOT NULL,   -- 'question' | 'reply'
+            in_reply_to    TEXT,
+            body           TEXT NOT NULL,
+            status         TEXT NOT NULL,   -- unread | read | answered | consumed
+            created_at     TEXT NOT NULL,
+            blocking_until REAL             -- epoch; questions only
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ------------------------------------------------------------------------- aoe glue
+def die(msg, code=1):
+    print(f"agent-chat: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def aoe_json(args):
+    out = subprocess.run(["aoe", *args, "--json"], capture_output=True, text=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"`aoe {' '.join(args)}` failed: {out.stderr.strip()}")
+    return json.loads(out.stdout)
+
+
+def self_identity():
+    env = os.environ.get("AGENT_CHAT_ID")
+    if env:
+        sid, _, title = env.partition(":")
+        return sid, (title or sid)
+    try:
+        d = aoe_json(["session", "current"])
+    except Exception as e:  # noqa: BLE001
+        die(f"can't determine current aoe session ({e}). "
+            f"Set AGENT_CHAT_ID='<id>:<title>' or pass --from '<id>:<title>'.")
+    return d["id"], d.get("session") or d.get("title") or d["id"]
+
+
+def identity_from_args(args):
+    spec = getattr(args, "from_", None)
+    if spec:
+        sid, _, title = spec.partition(":")
+        return sid, (title or sid)
+    return self_identity()
+
+
+def _candidates(sessions):
+    return "\n".join(
+        f"    {s['title']}  ({s['id'][:12]})  [{s.get('group', '')}]" for s in sessions
+    )
+
+
+def resolve_recipient(spec):
+    # explicit "id:title" bypasses the aoe lookup (power users + tests)
+    if ":" in spec:
+        sid, _, title = spec.partition(":")
+        return sid, (title or sid)
+    sessions = aoe_json(["list"])
+    for pred in (
+        lambda s: s["title"].lower() == spec.lower(),
+        lambda s: s["id"] == spec,
+        lambda s: s["id"].startswith(spec),
+        lambda s: spec.lower() in s["title"].lower(),
+    ):
+        matches = [s for s in sessions if pred(s)]
+        if len(matches) == 1:
+            return matches[0]["id"], matches[0]["title"]
+        if len(matches) > 1:
+            die(f"'{spec}' is ambiguous. Candidates:\n{_candidates(matches)}")
+    die(f"no aoe session matches '{spec}'. Known sessions:\n{_candidates(sessions)}")
+
+
+def doorbell(to_id, text, enabled=True):
+    if not enabled:
+        return
+    out = subprocess.run(["aoe", "send", to_id, text], capture_output=True, text=True)
+    if out.returncode != 0:
+        print(f"agent-chat: warning: doorbell to {to_id} failed: {out.stderr.strip()}",
+              file=sys.stderr)
+
+
+def _insert(conn, **f):
+    conn.execute(
+        "INSERT INTO messages (id, thread_id, from_id, from_title, to_id, to_title, "
+        "kind, in_reply_to, body, status, created_at, blocking_until) "
+        "VALUES (:id,:thread_id,:from_id,:from_title,:to_id,:to_title,:kind,"
+        ":in_reply_to,:body,:status,:created_at,:blocking_until)",
+        f,
+    )
+
+
+def _find_reply(conn, qid):
+    return conn.execute(
+        "SELECT * FROM messages WHERE in_reply_to=? AND kind='reply' "
+        "ORDER BY created_at LIMIT 1", (qid,)
+    ).fetchone()
+
+
+def _print_reply(row):
+    print(f"\n--- reply from {row['from_title']} ---")
+    print(row["body"])
+
+
+# ------------------------------------------------------------------------- commands
+def cmd_ask(args):
+    conn = connect()
+    from_id, from_title = identity_from_args(args)
+    to_id, to_title = resolve_recipient(args.recipient)
+    msg_id = uuid.uuid4().hex
+    thread_id = args.thread or msg_id
+    deadline = time.time() + args.timeout
+    with conn:
+        _insert(conn, id=msg_id, thread_id=thread_id, from_id=from_id,
+                from_title=from_title, to_id=to_id, to_title=to_title, kind="question",
+                in_reply_to=None, body=args.question, status="unread",
+                created_at=now_iso(), blocking_until=deadline)
+
+    text = (
+        f"[agent-chat] New question from {from_title} ({from_id}).\n\n"
+        f"{args.question}\n\n"
+        f"To answer, run:\n  agent-chat reply {msg_id} \"<your answer>\"\n\n"
+        f"(Another AI agent in the aoe fleet is asking you directly — "
+        f"answer from your project's knowledge.)"
+    )
+    doorbell(to_id, text, enabled=not args.no_doorbell)
+    print(f"agent-chat: asked {to_title} (msg {msg_id[:8]}); "
+          f"waiting up to {int(args.timeout)}s...", file=sys.stderr)
+
+    while time.time() < deadline:
+        row = _find_reply(conn, msg_id)
+        if row:
+            with conn:
+                conn.execute("UPDATE messages SET status='consumed' WHERE id=?",
+                             (row["id"],))
+            _print_reply(row)
+            return 0
+        time.sleep(POLL_INTERVAL)
+
+    # timeout: final check, then arm async fallback
+    with conn:
+        row = _find_reply(conn, msg_id)
+        if row:
+            conn.execute("UPDATE messages SET status='consumed' WHERE id=?", (row["id"],))
+            _print_reply(row)
+            return 0
+        conn.execute("UPDATE messages SET blocking_until=0 WHERE id=?", (msg_id,))
+    print(f"agent-chat: no reply yet — msg {msg_id[:8]} pending. The reply will be "
+          f"delivered to you when it arrives (or run: agent-chat replies).",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_reply(args):
+    conn = connect()
+    from_id, from_title = identity_from_args(args)
+    q = conn.execute(
+        "SELECT * FROM messages WHERE (id=? OR id LIKE ?) AND kind='question'",
+        (args.msg_id, args.msg_id + "%"),
+    ).fetchone()
+    if not q:
+        die(f"no question with id '{args.msg_id}'")
+    reply_id = uuid.uuid4().hex
+    with conn:
+        _insert(conn, id=reply_id, thread_id=q["thread_id"], from_id=from_id,
+                from_title=from_title, to_id=q["from_id"], to_title=q["from_title"],
+                kind="reply", in_reply_to=q["id"], body=args.answer, status="unread",
+                created_at=now_iso(), blocking_until=None)
+        conn.execute("UPDATE messages SET status='answered' WHERE id=?", (q["id"],))
+
+    bu = q["blocking_until"]
+    asker_blocking = bu is not None and bu > time.time()
+    if not asker_blocking and not args.no_doorbell:
+        short_q = (q["body"][:120] + "…") if len(q["body"]) > 120 else q["body"]
+        doorbell(q["from_id"],
+                 f"[agent-chat] Reply from {from_title} to your question:\n"
+                 f"  Q: {short_q}\n  A: {args.answer}\n\n"
+                 f"Full thread: agent-chat thread {q['thread_id']}")
+    print(f"agent-chat: replied to {q['from_title']} (msg {reply_id[:8]}).",
+          file=sys.stderr)
+    return 0
+
+
+def cmd_inbox(args):
+    conn = connect()
+    me_id, me_title = identity_from_args(args)
+    rows = conn.execute(
+        "SELECT * FROM messages WHERE to_id=? AND kind='question' AND status!='answered' "
+        "ORDER BY created_at", (me_id,)).fetchall()
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+        return 0
+    if not rows:
+        print(f"agent-chat: inbox empty for {me_title}.")
+        return 0
+    print(f"agent-chat inbox for {me_title} ({len(rows)} open):")
+    for r in rows:
+        print(f"\n  [{r['id'][:8]}] from {r['from_title']}  ({r['created_at']})")
+        print(f"      {r['body']}")
+        print(f"      -> agent-chat reply {r['id'][:8]} \"<answer>\"")
+    return 0
+
+
+def cmd_replies(args):
+    conn = connect()
+    me_id, _ = identity_from_args(args)
+    rows = conn.execute(
+        "SELECT * FROM messages WHERE to_id=? AND kind='reply' AND status!='consumed' "
+        "ORDER BY created_at", (me_id,)).fetchall()
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2))
+    elif not rows:
+        print("agent-chat: no new replies.")
+    else:
+        for r in rows:
+            print(f"\n--- reply from {r['from_title']}  ({r['created_at']}) ---")
+            print(r["body"])
+            print(f"(thread: agent-chat thread {r['thread_id']})")
+    if not args.peek and rows:
+        with conn:
+            conn.executemany("UPDATE messages SET status='consumed' WHERE id=?",
+                             [(r["id"],) for r in rows])
+    return 0
+
+
+def cmd_thread(args):
+    conn = connect()
+    tid = args.thread_id
+    rows = conn.execute(
+        "SELECT * FROM messages WHERE thread_id IN "
+        "(SELECT thread_id FROM messages WHERE id=? OR id LIKE ? OR thread_id=? "
+        "OR thread_id LIKE ?) ORDER BY created_at",
+        (tid, tid + "%", tid, tid + "%")).fetchall()
+    if not rows:
+        die(f"no thread '{tid}'")
+    print(f"thread {rows[0]['thread_id'][:8]}:")
+    for r in rows:
+        tag = "Q" if r["kind"] == "question" else "A"
+        print(f"\n[{tag}] {r['from_title']} -> {r['to_title']}  ({r['created_at']})")
+        print(f"    {r['body']}")
+    return 0
+
+
+def cmd_whoami(args):
+    me_id, me_title = identity_from_args(args)
+    print(f"id:    {me_id}")
+    print(f"title: {me_title}")
+    return 0
+
+
+# ----------------------------------------------------------------------------- main
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="agent-chat", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--from", dest="from_", metavar="ID[:TITLE]",
+                   help="override self identity (testing / non-aoe shells)")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("ask", help="ask another agent and wait for a reply")
+    a.add_argument("recipient", help="aoe session title or id (or 'id:title')")
+    a.add_argument("question")
+    a.add_argument("--timeout", type=float, default=120.0, help="seconds to block (default 120)")
+    a.add_argument("--thread", default=None, help="attach to an existing thread id")
+    a.add_argument("--no-doorbell", action="store_true")
+    a.set_defaults(func=cmd_ask)
+
+    r = sub.add_parser("reply", help="reply to a question by msg id")
+    r.add_argument("msg_id")
+    r.add_argument("answer")
+    r.add_argument("--no-doorbell", action="store_true")
+    r.set_defaults(func=cmd_reply)
+
+    i = sub.add_parser("inbox", help="list open questions addressed to me")
+    i.add_argument("--json", action="store_true")
+    i.set_defaults(func=cmd_inbox)
+
+    rp = sub.add_parser("replies", help="show (and consume) replies to my questions")
+    rp.add_argument("--json", action="store_true")
+    rp.add_argument("--peek", action="store_true", help="don't mark replies consumed")
+    rp.set_defaults(func=cmd_replies)
+
+    t = sub.add_parser("thread", help="print a full conversation thread")
+    t.add_argument("thread_id")
+    t.set_defaults(func=cmd_thread)
+
+    w = sub.add_parser("whoami", help="print resolved self identity")
+    w.set_defaults(func=cmd_whoami)
+
+    args = p.parse_args(argv)
+    sys.exit(args.func(args) or 0)
+
+
+if __name__ == "__main__":
+    main()
