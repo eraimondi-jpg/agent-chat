@@ -21,6 +21,8 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+import agent_chat_v2
+
 DEFAULT_DB = os.path.expanduser("~/.local/share/agent-chat/mail.db")
 POLL_INTERVAL = 2.0
 
@@ -32,30 +34,43 @@ def db_path():
 
 def connect():
     path = db_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS messages (
-            id             TEXT PRIMARY KEY,
-            thread_id      TEXT NOT NULL,
-            from_id        TEXT NOT NULL,
-            from_title     TEXT NOT NULL,
-            to_id          TEXT NOT NULL,
-            to_title       TEXT NOT NULL,
-            kind           TEXT NOT NULL,   -- 'question' | 'reply'
-            in_reply_to    TEXT,
-            body           TEXT NOT NULL,
-            status         TEXT NOT NULL,   -- unread | read | answered | consumed
-            created_at     TEXT NOT NULL,
-            blocking_until REAL             -- epoch; questions only
+    agent_chat_v2.prepare_storage(path)
+    previous_umask = os.umask(0o077)
+    try:
+        conn = sqlite3.connect(path, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
+        for attempt in range(6):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as error:
+                if "locked" not in str(error).lower() or attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                id             TEXT PRIMARY KEY,
+                thread_id      TEXT NOT NULL,
+                from_id        TEXT NOT NULL,
+                from_title     TEXT NOT NULL,
+                to_id          TEXT NOT NULL,
+                to_title       TEXT NOT NULL,
+                kind           TEXT NOT NULL,   -- 'question' | 'reply'
+                in_reply_to    TEXT,
+                body           TEXT NOT NULL,
+                status         TEXT NOT NULL,   -- unread | read | answered | consumed
+                created_at     TEXT NOT NULL,
+                blocking_until REAL             -- epoch; questions only
+            )
+            """
         )
-        """
-    )
-    conn.commit()
+        conn.commit()
+    finally:
+        os.umask(previous_umask)
+        agent_chat_v2.repair_storage_modes(path)
     return conn
 
 
@@ -375,6 +390,11 @@ def main(argv=None):
 
     w = sub.add_parser("whoami", help="print resolved self identity")
     w.set_defaults(func=cmd_whoami)
+
+    # Agent Chat v2 is additive. Its storage and JSON protocol live in a
+    # separate module so the v1 question/reply path above remains unchanged
+    # for one compatibility cycle.
+    agent_chat_v2.add_parsers(sub)
 
     args = p.parse_args(argv)
     sys.exit(args.func(args) or 0)

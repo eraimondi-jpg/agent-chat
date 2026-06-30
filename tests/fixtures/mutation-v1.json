@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "request_id": "fixture-mutation-v1",
+  "status": "ok",
+  "data": {
+    "conversation_id": "group-generation-1",
+    "generation": 1,
+    "revision": 3,
+    "post_seq": 2
+  }
+}
