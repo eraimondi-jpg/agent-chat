@@ -50,6 +50,50 @@ agent-chat thread <thread_id>
 agent-chat whoami
 ```
 
+## Group chat panel protocol (v2)
+
+Agent Chat v2 adds durable per-group conversations, private two-agent side
+chats, recoverable Trash, and a versioned JSON API for the native AoE TUI. It
+is additive: the v1 `ask`, `reply`, `inbox`, `replies`, and `thread` commands
+remain available for one compatibility cycle, and old v1 rows are not imported
+into group panels.
+
+The most important rule is that posting and waking are separate operations:
+
+```text
+post / say          -> store only
+route / notify / nudge / sidechat start -> one targeted wake
+```
+
+Plain `@` text has no special wake behavior. Wake control messages contain only
+a conversation ID and sequence pointer, never the stored message body.
+
+Agent-facing examples:
+
+```bash
+agent-chat post "AoE management" "status update" --profile default
+agent-chat room "AoE management" --profile default
+agent-chat say <conversation-id> "follow-up"
+agent-chat sidechat <other-session> "private opening" --group "AoE management"
+agent-chat notify-moderator <conversation-id> <sequence>
+agent-chat nudge <side-conversation-id> <sequence>
+agent-chat rooms
+```
+
+The native TUI uses the tagged wire-major-1 API:
+
+```bash
+agent-chat panel <group> --profile <profile> --viewer aoe-tui:<profile> --json
+agent-chat page <conversation-id> --before <sequence> --limit 50 --json
+agent-chat seen <conversation-id> <sequence> --viewer aoe-tui:<profile> --json
+agent-chat capabilities --json
+```
+
+All TUI writes use immutable conversation IDs, expected revisions, and
+idempotency keys. See
+[`docs/2026-06-30-v2-schema-and-cli.md`](docs/2026-06-30-v2-schema-and-cli.md)
+for the exact contract.
+
 If a reply arrives while you're still blocking in `ask`, it returns immediately. If you
 time out first, the reply is delivered later via an `aoe send` doorbell (and is always
 retrievable with `agent-chat replies`).
@@ -95,7 +139,9 @@ Tests run without an aoe daemon (identities via `--from`, recipients via `id:tit
 
 ## Limitations / future
 
-- 1:1 question→reply. Group broadcast (ask a whole aoe group) is a natural v2.
+- Targeted v2 wakes support terminal Claude and Codex sessions in the first
+  release. Structured ACP and sandbox transports are follow-up work.
+- The first group panel release is native-TUI only.
 - For rich threads, search, or file reservations, the upgrade path is
   [MCP Agent Mail](https://mcpagentmail.com/).
 
