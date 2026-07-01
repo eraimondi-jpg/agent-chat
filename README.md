@@ -60,11 +60,11 @@ agent-chat whoami
 
 ## Group chat panel protocol (v2)
 
-Agent Chat v2 adds durable per-group conversations, private two-agent side
-chats, recoverable Trash, and a versioned JSON API for the native AoE TUI. It
-is additive: the v1 `ask`, `reply`, `inbox`, `replies`, and `thread` commands
-remain available for one compatibility cycle, and old v1 rows are not imported
-into group panels.
+Agent Chat v2 adds durable per-group conversations, two-agent side chats with
+human General Manager visibility, recoverable Trash, and a versioned JSON API
+for the native AoE TUI. It is additive: the v1 `ask`, `reply`, `inbox`,
+`replies`, and `thread` commands remain available for one compatibility cycle,
+and old v1 rows are not imported into group panels.
 
 The most important rule is that posting and waking are separate operations:
 
@@ -96,11 +96,18 @@ agent-chat rooms
 The native TUI uses the tagged wire-major-1 API:
 
 ```bash
-agent-chat panel <group> --profile <profile> --viewer aoe-tui:<profile> --json
-agent-chat page <conversation-id> --before <sequence> --limit 50 --json
+agent-chat panel <group> --profile <profile> --viewer aoe-tui:<profile> --actor general-manager --json
+agent-chat page <conversation-id> --before <sequence> --limit 50 --actor general-manager --json
 agent-chat seen <conversation-id> <sequence> --viewer aoe-tui:<profile> --json
 agent-chat capabilities --json
 ```
+
+The explicit `--actor general-manager` assertion lets the human GM panel read
+side-chat bodies. Without it, side detail is metadata-only and side paging is
+rejected. Project Managers and other agents must not use this trust-based human
+surface assertion; their participant access remains through `read`.
+Embedding clients can discover this contract through the
+`general_manager_side_chat_bodies` capability.
 
 All TUI writes use immutable conversation IDs, expected revisions, and
 idempotency keys. See

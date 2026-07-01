@@ -138,10 +138,20 @@ class AgentChatV2Test(unittest.TestCase):
             env=env,
         )
 
-    def panel(self, profile="work", conversation=None, group="Team", env=None):
+    def panel(
+        self,
+        profile="work",
+        conversation=None,
+        group="Team",
+        env=None,
+        *,
+        gm=False,
+    ):
         args = ["panel", group, "--profile", profile, "--viewer", f"aoe-tui:{profile}"]
         if conversation:
             args.extend(["--conversation", conversation])
+        if gm:
+            args.extend(["--actor", "general-manager"])
         args.append("--json")
         return self.ok(*args, env=env)
 
@@ -178,7 +188,12 @@ class AgentChatV2Test(unittest.TestCase):
     def test_checked_in_wire_fixtures_share_the_tagged_v1_envelope(self):
         fixture_dir = os.path.join(HERE, "fixtures")
         fixtures = {}
-        for name in ("panel-v1.json", "mutation-v1.json", "error-v1.json"):
+        for name in (
+            "panel-v1.json",
+            "panel-gm-side-v1.json",
+            "mutation-v1.json",
+            "error-v1.json",
+        ):
             with open(os.path.join(fixture_dir, name), encoding="utf-8") as handle:
                 fixtures[name] = json.load(handle)
             self.assertEqual(fixtures[name]["v"], 1)
@@ -186,6 +201,16 @@ class AgentChatV2Test(unittest.TestCase):
         self.assertEqual(fixtures["panel-v1.json"]["status"], "ok")
         self.assertEqual(
             fixtures["panel-v1.json"]["data"]["detail"]["body_visibility"], "full"
+        )
+        self.assertEqual(
+            fixtures["panel-gm-side-v1.json"]["data"]["detail"]["body_visibility"],
+            "full",
+        )
+        self.assertEqual(
+            fixtures["panel-gm-side-v1.json"]["data"]["detail"]["conversation"][
+                "kind"
+            ],
+            "side",
         )
         self.assertEqual(fixtures["mutation-v1.json"]["status"], "ok")
         self.assertEqual(fixtures["error-v1.json"]["status"], "error")
@@ -548,9 +573,12 @@ class AgentChatV2Test(unittest.TestCase):
         )
         self.assertEqual(len(self.aoe_calls()), 4)
 
-    def test_capabilities_advertise_explicit_group_broadcast(self):
+    def test_capabilities_advertise_explicit_group_broadcast_and_gm_side_visibility(self):
         capabilities = self.ok("capabilities", "--json")
         self.assertIn("group_broadcast", capabilities["capabilities"])
+        self.assertIn(
+            "general_manager_side_chat_bodies", capabilities["capabilities"]
+        )
 
     def test_successive_broadcasts_coalesce_per_target_without_losing_exact_ids(self):
         started = self.gm_start()
@@ -799,7 +827,7 @@ class AgentChatV2Test(unittest.TestCase):
             [(2, "active"), (1, "trashed")],
         )
 
-    def test_side_chat_bodies_are_private_from_gm_panel(self):
+    def test_side_chat_bodies_require_explicit_gm_panel_access(self):
         self.gm_start()
         side = self.ok(
             "sidechat",
@@ -815,10 +843,35 @@ class AgentChatV2Test(unittest.TestCase):
             "--json",
             identity="worker-1:Worker One",
         )
-        panel = self.panel(conversation=side["conversation_id"])
-        self.assertEqual(panel["detail"]["body_visibility"], "metadata_only")
-        self.assertEqual(panel["detail"]["window"]["posts"], [])
-        self.assertNotIn("SIDE SECRET", json.dumps(panel))
+        cursors_before_panel = {
+            row["session_id"]: row["last_read_seq"]
+            for row in self.db_rows(
+                "SELECT session_id,last_read_seq FROM participants "
+                "WHERE conversation_id=?",
+                (side["conversation_id"],),
+            )
+        }
+        generic_panel = self.panel(conversation=side["conversation_id"])
+        self.assertEqual(
+            generic_panel["detail"]["body_visibility"], "metadata_only"
+        )
+        self.assertEqual(generic_panel["detail"]["window"]["posts"], [])
+        self.assertNotIn("SIDE SECRET", json.dumps(generic_panel))
+
+        gm_panel = self.panel(conversation=side["conversation_id"], gm=True)
+        self.assertEqual(gm_panel["detail"]["body_visibility"], "full")
+        self.assertEqual(
+            gm_panel["detail"]["window"]["posts"][0]["body"], "SIDE SECRET"
+        )
+        cursors = {
+            row["session_id"]: row["last_read_seq"]
+            for row in self.db_rows(
+                "SELECT session_id,last_read_seq FROM participants "
+                "WHERE conversation_id=?",
+                (side["conversation_id"],),
+            )
+        }
+        self.assertEqual(cursors, cursors_before_panel)
         read = self.ok(
             "read",
             side["conversation_id"],
@@ -834,6 +887,13 @@ class AgentChatV2Test(unittest.TestCase):
             identity="pm-work:Work PM",
         )
         self.error(
+            "not_a_participant",
+            "read",
+            side["conversation_id"],
+            "--json",
+            identity="general-manager:General Manager",
+        )
+        self.error(
             "side_chat_private",
             "page",
             side["conversation_id"],
@@ -843,6 +903,29 @@ class AgentChatV2Test(unittest.TestCase):
             "20",
             "--json",
         )
+        self.error(
+            "side_chat_private",
+            "page",
+            side["conversation_id"],
+            "--before",
+            "2",
+            "--limit",
+            "20",
+            "--json",
+            identity="general-manager:General Manager",
+        )
+        page = self.ok(
+            "page",
+            side["conversation_id"],
+            "--before",
+            "2",
+            "--limit",
+            "20",
+            "--actor",
+            "general-manager",
+            "--json",
+        )
+        self.assertEqual(page["window"]["posts"][0]["body"], "SIDE SECRET")
 
         self.error(
             "not_a_participant",

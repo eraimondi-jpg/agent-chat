@@ -147,9 +147,13 @@ as a PM replacement; an absent owner with a different PM is treated as path
 reuse. Fully unambiguous rebinds require a future stable AoE group ID or an
 explicit audited rebind operation.
 
-Side-chat bodies are readable only by the two fixed participants. The GM/PM
-panel receives participant and activity metadata but an empty message window.
-There are no observer grants in this release.
+Side-chat bodies are readable by the two fixed participants and by the human
+General Manager panel. Project Managers and all other agents receive
+participant and activity metadata but an empty message window. The panel and
+history APIs require an explicit `--actor general-manager` assertion before
+returning side bodies; ordinary calls remain metadata-only. This is a
+cooperative honor-rule boundary, not an observer grant or cryptographic role.
+Agents must not invoke the human-surface assertion.
 Both side-chat participants must belong to the same active parent group when
 the chat starts. Cross-group side chats are not supported in this release.
 
@@ -243,6 +247,7 @@ agent-chat capabilities --json
 agent-chat panel <group>
   --profile <profile>
   --viewer aoe-tui:<profile>
+  --actor general-manager
   [--conversation <id>]
   --json
 
@@ -254,6 +259,7 @@ agent-chat panels
 agent-chat page <conversation-id>
   --before <exclusive-sequence>
   --limit <1..200>
+  --actor general-manager
   --json
 
 agent-chat seen <conversation-id> <through-sequence>
@@ -301,8 +307,12 @@ agent-chat restore <conversation-id>
 deterministically ordered conversation summaries, optional selected detail, and
 total viewer unread. Detail includes participants, wakes, and a bounded message
 window with `first_seq`, `through_seq`, `has_more_before`, and ascending posts.
-Side detail always reports `body_visibility: "metadata_only"` and an empty
-window to a GM viewer.
+With the explicit GM actor assertion, side detail reports
+`body_visibility: "full"` and returns the same bounded window shape as a group.
+Without it, side detail reports `body_visibility: "metadata_only"` and an empty
+window; paging a side conversation returns `side_chat_private`. Embedding
+clients should request and trust side bodies only when
+`general_manager_side_chat_bodies` is advertised by `capabilities`.
 
 Embedding clients should allow at least 60 seconds for a mutating command. A
 route can perform an authoritative AoE preflight and then a bounded targeted
@@ -357,6 +367,11 @@ are therefore assertions, not cryptographic capabilities. Authorization and
 participant checks prevent accidental policy violations and provide a clear
 protocol boundary, but they cannot defend against a malicious local peer that
 can invoke the CLI directly or edit the shared database.
+
+The `--actor general-manager` marker on `panel` and `page` is reserved for the
+AoE human GM surface. It does not make the General Manager a side-chat
+participant: `read` and `say` retain their participant checks, and Project
+Managers or other agents must not assert the GM role to inspect side bodies.
 
 A hardened multi-user or adversarial deployment requires a daemon-owned store
 and unforgeable caller capabilities. That is explicitly outside this first

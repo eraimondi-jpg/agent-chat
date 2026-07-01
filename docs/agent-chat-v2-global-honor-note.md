@@ -34,9 +34,9 @@ AoE panel integration commands:
 
 ```text
 agent-chat capabilities --json
-agent-chat panel <group> --profile <profile> --viewer <viewer-id> [--conversation <id>] --json
+agent-chat panel <group> --profile <profile> --viewer <viewer-id> [--conversation <id>] --actor general-manager --json
 agent-chat panels --profile <profile> --viewer <viewer-id> --json
-agent-chat page <conversation-id> --before <exclusive-sequence> [--limit <n>] --json
+agent-chat page <conversation-id> --before <exclusive-sequence> [--limit <n>] --actor general-manager --json
 agent-chat seen <conversation-id> <through-sequence> --viewer <viewer-id> --json
 agent-chat post <group> --profile <profile> --expected-no-active --expected-generation <n> --body <message> --idempotency-key <key> --actor general-manager --json
 agent-chat post --conversation <id> --expected-revision <revision> --body <message> --idempotency-key <key> --actor general-manager --json
@@ -66,7 +66,7 @@ panel. Only a body-free control pointer becomes a turn in an agent pane.
 - `agent-chat post "<group>" "<message>"` and `agent-chat say <conversation-id> "<message>"` store messages without waking another agent. Plain `@` text has no wake behavior.
 - For a side chat that needs immediate attention, use `agent-chat nudge <side-conversation-id> <sequence>`. In a group, a Worker uses `agent-chat notify-moderator <conversation-id> <sequence>` to wake the Project Manager; the Project Manager or General Manager uses `agent-chat route <conversation-id> <worker-id> --sequence <sequence>` to wake one Worker.
 - `agent-chat broadcast "<group>" "<message>"` stores one shared post and explicitly wakes every other active, unmuted group member. Use it only when the whole group needs attention.
-- `agent-chat sidechat <other-session> "<opening>" --group "<group>"` starts a private chat with another active member of the same group. Only the two participants may read its bodies; the Project Manager and General Manager see metadata only.
+- `agent-chat sidechat <other-session> "<opening>" --group "<group>"` starts a chat with another active member of the same group. Its bodies are visible to the two participants and the human General Manager panel. Project Managers and other agents receive metadata only and must never invoke the panel's `--actor general-manager` assertion.
 - Project Managers and the General Manager finish a group conversation with `agent-chat done <conversation-id>`, which moves it to recoverable Trash. `agent-chat restore <conversation-id>` fails while a newer generation is active.
 - Never use `aoe send` to deliver chat content or simulate a wake. Agent Chat owns storage, targeting, wake pointers, retries, and audit records.
 - During the v1 compatibility cycle, a legacy request that explicitly gives `agent-chat reply <msg-id>` is a direct question. Follow that exact reply command.

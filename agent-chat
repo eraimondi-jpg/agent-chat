@@ -3,7 +3,8 @@
 
 Group messages live in Agent Chat and the aoe panel, not in agent panes. Ordinary
 posts never wake agents; explicit broadcast, moderator routing, notification, and
-side-chat operations send body-free wake pointers.
+side-chat operations send body-free wake pointers. Side chats are private from
+other agents but visible to the human General Manager panel.
 
   agent-chat post "AoE management" "status update"
   agent-chat broadcast "AoE management" "everyone read this"

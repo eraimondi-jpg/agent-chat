@@ -1423,7 +1423,7 @@ def _detail(
     row: sqlite3.Row,
     viewer: str,
     *,
-    gm_surface: bool,
+    can_view_side_bodies: bool,
     live_members: list[dict[str, Any]] | None = None,
     live_moderator_id: str | None = None,
 ) -> dict[str, Any]:
@@ -1437,7 +1437,7 @@ def _detail(
     )
     if live_members is not None:
         summary["participant_count"] = len(live_members)
-    metadata_only = gm_surface and row["kind"] == "side"
+    metadata_only = row["kind"] == "side" and not can_view_side_bodies
     window = (
         {"first_seq": None, "through_seq": None, "has_more_before": False, "posts": []}
         if metadata_only
@@ -1513,7 +1513,7 @@ def cmd_panel(args: argparse.Namespace) -> dict[str, Any]:
             conn,
             selected,
             args.viewer,
-            gm_surface=True,
+            can_view_side_bodies=args.actor == GENERAL_MANAGER_ID,
             live_members=live_members if use_live else None,
             live_moderator_id=(
                 str(live_moderator["id"])
@@ -1562,11 +1562,14 @@ def cmd_panel(args: argparse.Namespace) -> dict[str, Any]:
 def cmd_page(args: argparse.Namespace) -> dict[str, Any]:
     conn = _open_db()
     conversation = _conversation(conn, args.conversation_id)
-    if conversation["kind"] == "side":
+    if conversation["kind"] == "side" and args.actor != GENERAL_MANAGER_ID:
         raise ProtocolFault(
             "side_chat_private",
-            "side-chat bodies are private to their two participants",
-            details={"conversation_id": conversation["id"]},
+            "side-chat paging requires the General Manager human surface",
+            details={
+                "conversation_id": conversation["id"],
+                "required_actor": GENERAL_MANAGER_ID,
+            },
         )
     limit = min(max(1, args.limit), MAX_PAGE_SIZE)
     rows = conn.execute(
@@ -1683,6 +1686,7 @@ def cmd_capabilities(_args: argparse.Namespace) -> dict[str, Any]:
             "idempotent_mutations",
             "coalesced_wake_outbox",
             "group_broadcast",
+            "general_manager_side_chat_bodies",
         ],
         "wake_transports": ["terminal"],
         "ordinary_posts_wake": False,
@@ -2709,6 +2713,11 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-a
     panel.add_argument("--profile", required=True)
     panel.add_argument("--viewer", required=True)
     panel.add_argument("--conversation")
+    panel.add_argument(
+        "--actor",
+        choices=("general-manager",),
+        help="assert General Manager human-panel access",
+    )
     _wire_options(panel)
     _v2(panel, cmd_panel)
 
@@ -2722,6 +2731,11 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-a
     page.add_argument("conversation_id")
     page.add_argument("--before", type=int, required=True)
     page.add_argument("--limit", type=int, default=DEFAULT_PAGE_SIZE)
+    page.add_argument(
+        "--actor",
+        choices=("general-manager",),
+        help="assert General Manager human-panel access",
+    )
     _wire_options(page)
     _v2(page, cmd_page)
 
@@ -2802,7 +2816,9 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-a
     _wire_options(rooms)
     _v2(rooms, cmd_rooms)
 
-    sidechat = sub.add_parser("sidechat", help="start a private two-agent side chat")
+    sidechat = sub.add_parser(
+        "sidechat", help="start a two-agent side chat visible to the human GM"
+    )
     sidechat.add_argument("other_session")
     sidechat.add_argument("opening")
     sidechat.add_argument("--group")

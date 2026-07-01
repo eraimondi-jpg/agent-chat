@@ -1,0 +1,82 @@
+{
+  "v": 1,
+  "request_id": "fixture-panel-gm-side-v1",
+  "status": "ok",
+  "data": {
+    "group": {
+      "profile": "work",
+      "group_path": "Team"
+    },
+    "moderator": {
+      "session_id": "pm-work",
+      "title": "Work PM",
+      "dormant": false
+    },
+    "conversations": [
+      {
+        "id": "private-side-1",
+        "kind": "side",
+        "status": "active",
+        "title": "Worker One and Worker Two",
+        "generation": null,
+        "parent_id": "group-generation-1",
+        "revision": 2,
+        "highest_seq": 1,
+        "viewer_unread": 1,
+        "participant_count": 2,
+        "last_post_at": "2026-06-30T12:00:02+00:00"
+      }
+    ],
+    "detail": {
+      "conversation": {
+        "id": "private-side-1",
+        "kind": "side",
+        "status": "active",
+        "title": "Worker One and Worker Two",
+        "generation": null,
+        "parent_id": "group-generation-1",
+        "revision": 2,
+        "highest_seq": 1,
+        "viewer_unread": 1,
+        "participant_count": 2,
+        "last_post_at": "2026-06-30T12:00:02+00:00"
+      },
+      "body_visibility": "full",
+      "participants": [
+        {
+          "session_id": "worker-1",
+          "title": "Worker One",
+          "role": "member",
+          "unread_count": 0,
+          "departed": false
+        },
+        {
+          "session_id": "worker-2",
+          "title": "Worker Two",
+          "role": "member",
+          "unread_count": 1,
+          "departed": false
+        }
+      ],
+      "window": {
+        "first_seq": 1,
+        "through_seq": 1,
+        "has_more_before": false,
+        "posts": [
+          {
+            "id": "side-post-1",
+            "seq": 1,
+            "from_id": "worker-1",
+            "from_title": "Worker One",
+            "body": "GM-visible side-chat body",
+            "created_at": "2026-06-30T12:00:02+00:00",
+            "kind": "message",
+            "routed_to": null
+          }
+        ]
+      },
+      "wakes": []
+    },
+    "total_viewer_unread": 1
+  }
+}
