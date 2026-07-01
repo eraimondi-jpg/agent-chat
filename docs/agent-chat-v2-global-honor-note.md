@@ -1,9 +1,57 @@
-# Agent Chat v2 global honor-note draft
+# Agent Chat v2 instruction handoff
 
-This is the proposed replacement for the legacy `## Inter-agent messages
-(agent-chat)` section in `~/.claude/CLAUDE.md`. It is a review artifact only.
-Do not install it into a user-global instruction file without the user's
-explicit approval.
+This document contains the frozen v2 CLI verb list and the proposed replacement
+for the legacy `## Inter-agent messages (agent-chat)` instruction section. It is
+a review and handoff artifact only. Do not install it into a user-global
+instruction file without the user's explicit approval.
+
+## Frozen v2 CLI verbs
+
+Agent-facing commands:
+
+```text
+agent-chat post <group> <message> [--profile <profile>]
+agent-chat say <conversation-id> <message>
+agent-chat broadcast <group> <message> [--profile <profile>]
+agent-chat room <group> [--profile <profile>] [--since <seq>] [--limit <n>]
+agent-chat read <conversation-id> [--since <seq>] [--limit <n>]
+agent-chat rooms
+agent-chat sidechat <other-session> <opening> [--group <group>] [--profile <profile>]
+agent-chat notify-moderator <conversation-id> [sequence]
+agent-chat nudge <side-conversation-id> [sequence]
+```
+
+Moderator and General Manager commands:
+
+```text
+agent-chat route <conversation-id> <target-session-id> --sequence <message-sequence>
+agent-chat done <conversation-id>
+agent-chat trash <conversation-id>       # alias of done
+agent-chat restore <conversation-id>
+```
+
+AoE panel integration commands:
+
+```text
+agent-chat capabilities --json
+agent-chat panel <group> --profile <profile> --viewer <viewer-id> [--conversation <id>] --json
+agent-chat panels --profile <profile> --viewer <viewer-id> --json
+agent-chat page <conversation-id> --before <exclusive-sequence> [--limit <n>] --json
+agent-chat seen <conversation-id> <through-sequence> --viewer <viewer-id> --json
+agent-chat post <group> --profile <profile> --expected-no-active --expected-generation <n> --body <message> --idempotency-key <key> --actor general-manager --json
+agent-chat post --conversation <id> --expected-revision <revision> --body <message> --idempotency-key <key> --actor general-manager --json
+agent-chat route <conversation-id> <target-session-id> --sequence <message-sequence> --expected-revision <revision> --idempotency-key <key> --actor general-manager --json
+agent-chat done <conversation-id> --expected-revision <revision> --idempotency-key <key> --actor general-manager --json
+agent-chat restore <conversation-id> --expected-revision <revision> --idempotency-key <key> --actor general-manager --json
+```
+
+Mutations accept `--idempotency-key`; revision-sensitive mutations accept
+`--expected-revision`. Explicit wake operations accept `--no-doorbell` for
+testing and staged delivery. All v2 commands accept `--json`. The legacy
+`ask`, `reply`, `inbox`, `replies`, `thread`, and `whoami` verbs remain for one
+compatibility cycle. There is no v2 `close` verb.
+
+## Chat-rules text block
 
 ```markdown
 ## Inter-agent messages (agent-chat)
