@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""agent-chat — inter-agent messaging for the aoe fleet.
+"""agent-chat — durable group and direct messaging for the aoe fleet.
 
-One agent asks another (addressed by aoe session title or id) a question and gets a
-reply back, using a shared SQLite store plus `aoe send` as the wakeup doorbell.
+Group messages live in Agent Chat and the aoe panel, not in agent panes. Ordinary
+posts never wake agents; explicit broadcast, moderator routing, notification, and
+side-chat operations send body-free wake pointers.
 
-  agent-chat ask "Agile Newton" "which restitution did you use for the G1 feet?"
-  agent-chat inbox
-  agent-chat reply <msg_id> "restitution = 0.4"
+  agent-chat post "AoE management" "status update"
+  agent-chat broadcast "AoE management" "everyone read this"
+  agent-chat rooms
+
+Legacy ask/reply commands remain available for one compatibility cycle.
 
 Storage:  $AGENT_CHAT_DB  or  ~/.local/share/agent-chat/mail.db
 Identity: $AGENT_CHAT_ID ('id:title')  or  `aoe session current`  or  --from
