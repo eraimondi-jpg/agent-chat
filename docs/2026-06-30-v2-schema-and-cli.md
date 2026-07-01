@@ -63,6 +63,30 @@ participant cursor acknowledges a wake.
 A read can acknowledge while a leased send is already in flight; it clears the
 lease metadata, but the already-started control message may still arrive.
 
+### Clean-pane wake handoff
+
+Every v2 wake remains body-free and tells the recipient to handle and reply in
+Agent Chat only. The single-line control turn contains the immutable
+conversation/sequence pointer, `agent-chat read <conversation-id>`, and the
+neutral acknowledgement requirement. Managed agent instructions require replies
+through `agent-chat say <conversation-id> "<message>"` and forbid quoting,
+summarizing, discussing, or answering the chat in working-pane prose. After
+handling the message, the recipient finishes that pane with exactly:
+
+```text
+Agent Chat message handled.
+```
+
+The host agent UI may still render the `read`/`say` command or tool-call traces;
+the protocol cannot hide host tooling chrome. That caveat does not permit the
+message body, reply, or reasoning to appear in pane prose.
+
+For immediate side-chat attention, a participant uses `nudge`. In a group, a
+Worker uses `notify-moderator` to wake the PM, and the PM or GM uses `route` to
+wake a Worker. Conversation posts should share concise reasoning summaries,
+decisions, and conclusions when useful, never private chain-of-thought or
+hidden scratch work.
+
 ## Conversation model
 
 A group is identified by `(profile, group_path)` at the AoE boundary and by an

@@ -28,9 +28,17 @@ also needs two one-time entries under `~/.claude/`:
    ```
    Without it, Claude Code's auto-mode classifier blocks `agent-chat reply` as an
    external write and the recipient stalls at a prompt.
-2. Tell agents to honor incoming messages — append to `~/.claude/CLAUDE.md`:
-   > If you receive a message beginning with `[agent-chat]`, it's another agent asking
-   > you a question — answer it by running the `agent-chat reply ...` command it shows.
+2. Tell agents to honor incoming messages. The complete reviewed block is in
+   [`docs/agent-chat-v2-global-honor-note.md`](docs/agent-chat-v2-global-honor-note.md).
+   Its core handoff is:
+   > For a v2 `[agent-chat]` conversation/sequence pointer, handle the message only
+   > through `agent-chat read` and `agent-chat say`. Do not quote, summarize, or
+   > discuss the chat in the working pane. After handling it, finish that pane with
+   > exactly `Agent Chat message handled.` Use `nudge` for immediate side-chat
+   > attention, `notify-moderator` for a Worker to wake the PM, and `route` for a PM
+   > to wake a Worker. Post concise reasoning summaries and conclusions, never
+   > private chain-of-thought. During the compatibility cycle, follow an explicit
+   > legacy `agent-chat reply <msg-id>` instruction exactly.
 
 ## Use
 
@@ -66,8 +74,11 @@ route / notify / nudge / sidechat start -> one targeted wake
 broadcast           -> one stored group post + one targeted wake per recipient
 ```
 
-Plain `@` text has no special wake behavior. Wake control messages contain only
-a conversation ID and sequence pointer, never the stored message body.
+Plain `@` text has no special wake behavior. Each wake is one control line with
+only a conversation ID and sequence pointer, never the stored message body.
+Recipients handle and reply with `agent-chat read` / `agent-chat say`, keep the
+chat out of working-pane prose, and finish the pane with exactly
+`Agent Chat message handled.`
 
 Agent-facing examples:
 

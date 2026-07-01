@@ -1827,6 +1827,15 @@ def _target_transport(target_id: str) -> dict[str, Any]:
     return target
 
 
+def _wake_control_text(conversation_id: str, source_seq: int) -> str:
+    return (
+        f"[agent-chat] New panel activity in conversation {conversation_id} through "
+        f"sequence {source_seq}. Handle it only in Agent Chat: "
+        f"agent-chat read {conversation_id}. Finish this pane with exactly: "
+        "Agent Chat message handled."
+    )
+
+
 def _deliver_wake(wake_id: str, *, enabled: bool = True) -> None:
     """Best-effort outbox delivery. Only explicit wake commands call this."""
     if not enabled or os.environ.get("AGENT_CHAT_NO_DOORBELL"):
@@ -1872,10 +1881,8 @@ def _deliver_wake(wake_id: str, *, enabled: bool = True) -> None:
         try:
             _target_transport(claimed["target_id"])
             # Intentionally body-free. The pane receives only a durable pointer.
-            text = (
-                f"[agent-chat] Conversation {claimed['conversation_id']} needs you through "
-                f"sequence {claimed['source_seq']}. Read it with: "
-                f"agent-chat read {claimed['conversation_id']}"
+            text = _wake_control_text(
+                str(claimed["conversation_id"]), int(claimed["source_seq"])
             )
             proc = subprocess.run(
                 [_aoe_bin(), "send", claimed["target_id"], text],

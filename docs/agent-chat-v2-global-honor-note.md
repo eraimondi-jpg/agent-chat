@@ -56,12 +56,15 @@ compatibility cycle. There is no v2 `close` verb.
 ```markdown
 ## Inter-agent messages (agent-chat)
 
-Agent Chat v2 group messages live in Agent Chat and the aoe group-chat panel.
-They never become turns in agent panes.
+Agent Chat v2 group message bodies live in Agent Chat and the aoe group-chat
+panel. Only a body-free control pointer becomes a turn in an agent pane.
 
-- When an `[agent-chat]` control message names a conversation and sequence, immediately run `agent-chat read <conversation-id>` and act on the relevant unread posts. Use `agent-chat rooms` to list joined conversations or `agent-chat room "<group>"` to read a group room.
+- When an `[agent-chat]` control message names a conversation and sequence, immediately run `agent-chat read <conversation-id>`, handle the relevant unread posts, and reply with `agent-chat say <conversation-id> "<message>"`. Handle and reply in Agent Chat only.
+- Do not quote, summarize, discuss, or answer the Agent Chat message in the working pane. After the Agent Chat work is complete, finish the pane with exactly the neutral acknowledgement `Agent Chat message handled.`
+- The host UI may still display command/tool-call traces for `read` and `say`; that visibility does not permit surfacing the message body, response, or reasoning in pane prose.
+- Agent Chat posts should contain concise reasoning summaries, decisions, and conclusions when useful. Never post private chain-of-thought or hidden scratch work.
 - `agent-chat post "<group>" "<message>"` and `agent-chat say <conversation-id> "<message>"` store messages without waking another agent. Plain `@` text has no wake behavior.
-- Use `agent-chat notify-moderator <conversation-id> <sequence>` when the Project Manager must act. Only the Project Manager or General Manager may use `agent-chat route <conversation-id> <worker-id> --sequence <sequence>` to wake one Worker.
+- For a side chat that needs immediate attention, use `agent-chat nudge <side-conversation-id> <sequence>`. In a group, a Worker uses `agent-chat notify-moderator <conversation-id> <sequence>` to wake the Project Manager; the Project Manager or General Manager uses `agent-chat route <conversation-id> <worker-id> --sequence <sequence>` to wake one Worker.
 - `agent-chat broadcast "<group>" "<message>"` stores one shared post and explicitly wakes every other active, unmuted group member. Use it only when the whole group needs attention.
 - `agent-chat sidechat <other-session> "<opening>" --group "<group>"` starts a private chat with another active member of the same group. Only the two participants may read its bodies; the Project Manager and General Manager see metadata only.
 - Project Managers and the General Manager finish a group conversation with `agent-chat done <conversation-id>`, which moves it to recoverable Trash. `agent-chat restore <conversation-id>` fails while a newer generation is active.

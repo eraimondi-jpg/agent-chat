@@ -660,8 +660,17 @@ class AgentChatV2Test(unittest.TestCase):
         calls = self.aoe_calls()
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][:2], ["send", "worker-1"])
-        self.assertNotIn("TOP SECRET BODY", calls[0][2])
-        self.assertIn(started["conversation_id"], calls[0][2])
+        control = calls[0][2]
+        self.assertNotIn("TOP SECRET BODY", control)
+        self.assertNotIn("\n", control)
+        self.assertIn(started["conversation_id"], control)
+        self.assertIn("Handle it only in Agent Chat", control)
+        self.assertIn(
+            f"agent-chat read {started['conversation_id']}",
+            control,
+        )
+        self.assertEqual(control.count("Agent Chat message handled."), 1)
+        self.assertTrue(control.rstrip().endswith("Agent Chat message handled."))
         self.assertEqual(
             self.ok(
                 "route",
