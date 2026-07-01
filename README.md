@@ -28,17 +28,9 @@ also needs two one-time entries under `~/.claude/`:
    ```
    Without it, Claude Code's auto-mode classifier blocks `agent-chat reply` as an
    external write and the recipient stalls at a prompt.
-2. Tell agents to honor incoming messages. The complete reviewed block is in
-   [`docs/agent-chat-v2-global-honor-note.md`](docs/agent-chat-v2-global-honor-note.md).
-   Its core handoff is:
-   > For a v2 `[agent-chat]` conversation/sequence pointer, handle the message only
-   > through `agent-chat read` and `agent-chat say`. Do not quote, summarize, or
-   > discuss the chat in the working pane. After handling it, finish that pane with
-   > exactly `Agent Chat message handled.` Use `nudge` for immediate side-chat
-   > attention, `notify-moderator` for a Worker to wake the PM, and `route` for a PM
-   > to wake a Worker. Post concise reasoning summaries and conclusions, never
-   > private chain-of-thought. During the compatibility cycle, follow an explicit
-   > legacy `agent-chat reply <msg-id>` instruction exactly.
+2. Tell agents to honor incoming messages — append to `~/.claude/CLAUDE.md`:
+   > If you receive a message beginning with `[agent-chat]`, it's another agent asking
+   > you a question — answer it by running the `agent-chat reply ...` command it shows.
 
 ## Use
 
@@ -57,62 +49,6 @@ agent-chat replies
 agent-chat thread <thread_id>
 agent-chat whoami
 ```
-
-## Group chat panel protocol (v2)
-
-Agent Chat v2 adds durable per-group conversations, two-agent side chats with
-human General Manager visibility, recoverable Trash, and a versioned JSON API
-for the native AoE TUI. It is additive: the v1 `ask`, `reply`, `inbox`,
-`replies`, and `thread` commands remain available for one compatibility cycle,
-and old v1 rows are not imported into group panels.
-
-The most important rule is that posting and waking are separate operations:
-
-```text
-post / say          -> store only
-route / notify / nudge / sidechat start -> one targeted wake
-broadcast           -> one stored group post + one targeted wake per recipient
-```
-
-Plain `@` text has no special wake behavior. Each wake is one control line with
-only a conversation ID and sequence pointer, never the stored message body.
-Recipients handle and reply with `agent-chat read` / `agent-chat say`, keep the
-chat out of working-pane prose, and finish the pane with exactly
-`Agent Chat message handled.`
-
-Agent-facing examples:
-
-```bash
-agent-chat post "AoE management" "status update" --profile default
-agent-chat broadcast "AoE management" "everyone read this" --profile default
-agent-chat room "AoE management" --profile default
-agent-chat say <conversation-id> "follow-up"
-agent-chat sidechat <other-session> "private opening" --group "AoE management"
-agent-chat notify-moderator <conversation-id> <sequence>
-agent-chat nudge <side-conversation-id> <sequence>
-agent-chat rooms
-```
-
-The native TUI uses the tagged wire-major-1 API:
-
-```bash
-agent-chat panel <group> --profile <profile> --viewer aoe-tui:<profile> --actor general-manager --json
-agent-chat page <conversation-id> --before <sequence> --limit 50 --actor general-manager --json
-agent-chat seen <conversation-id> <sequence> --viewer aoe-tui:<profile> --json
-agent-chat capabilities --json
-```
-
-The explicit `--actor general-manager` assertion lets the human GM panel read
-side-chat bodies. Without it, side detail is metadata-only and side paging is
-rejected. Project Managers and other agents must not use this trust-based human
-surface assertion; their participant access remains through `read`.
-Embedding clients can discover this contract through the
-`general_manager_side_chat_bodies` capability.
-
-All TUI writes use immutable conversation IDs, expected revisions, and
-idempotency keys. See
-[`docs/2026-06-30-v2-schema-and-cli.md`](docs/2026-06-30-v2-schema-and-cli.md)
-for the exact contract.
 
 If a reply arrives while you're still blocking in `ask`, it returns immediately. If you
 time out first, the reply is delivered later via an `aoe send` doorbell (and is always
@@ -159,11 +95,7 @@ Tests run without an aoe daemon (identities via `--from`, recipients via `id:tit
 
 ## Limitations / future
 
-- Targeted v2 wakes support terminal Claude and Codex sessions in the first
-  release. Structured ACP and sandbox transports are follow-up work.
-- The first group panel release is native-TUI only.
-- Side chats require both agents to be active participants in the same parent
-  group. Cross-group side chats are not supported.
+- 1:1 question→reply. Group broadcast (ask a whole aoe group) is a natural v2.
 - For rich threads, search, or file reservations, the upgrade path is
   [MCP Agent Mail](https://mcpagentmail.com/).
 

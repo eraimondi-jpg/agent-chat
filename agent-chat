@@ -1,16 +1,12 @@
 #!/usr/bin/env python3
-"""agent-chat — durable group and direct messaging for the aoe fleet.
+"""agent-chat — inter-agent messaging for the aoe fleet.
 
-Group messages live in Agent Chat and the aoe panel, not in agent panes. Ordinary
-posts never wake agents; explicit broadcast, moderator routing, notification, and
-side-chat operations send body-free wake pointers. Side chats are private from
-other agents but visible to the human General Manager panel.
+One agent asks another (addressed by aoe session title or id) a question and gets a
+reply back, using a shared SQLite store plus `aoe send` as the wakeup doorbell.
 
-  agent-chat post "AoE management" "status update"
-  agent-chat broadcast "AoE management" "everyone read this"
-  agent-chat rooms
-
-Legacy ask/reply commands remain available for one compatibility cycle.
+  agent-chat ask "Agile Newton" "which restitution did you use for the G1 feet?"
+  agent-chat inbox
+  agent-chat reply <msg_id> "restitution = 0.4"
 
 Storage:  $AGENT_CHAT_DB  or  ~/.local/share/agent-chat/mail.db
 Identity: $AGENT_CHAT_ID ('id:title')  or  `aoe session current`  or  --from
@@ -25,8 +21,6 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-import agent_chat_v2
-
 DEFAULT_DB = os.path.expanduser("~/.local/share/agent-chat/mail.db")
 POLL_INTERVAL = 2.0
 
@@ -38,43 +32,30 @@ def db_path():
 
 def connect():
     path = db_path()
-    agent_chat_v2.prepare_storage(path)
-    previous_umask = os.umask(0o077)
-    try:
-        conn = sqlite3.connect(path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=30000")
-        for attempt in range(6):
-            try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                break
-            except sqlite3.OperationalError as error:
-                if "locked" not in str(error).lower() or attempt == 5:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS messages (
-                id             TEXT PRIMARY KEY,
-                thread_id      TEXT NOT NULL,
-                from_id        TEXT NOT NULL,
-                from_title     TEXT NOT NULL,
-                to_id          TEXT NOT NULL,
-                to_title       TEXT NOT NULL,
-                kind           TEXT NOT NULL,   -- 'question' | 'reply'
-                in_reply_to    TEXT,
-                body           TEXT NOT NULL,
-                status         TEXT NOT NULL,   -- unread | read | answered | consumed
-                created_at     TEXT NOT NULL,
-                blocking_until REAL             -- epoch; questions only
-            )
-            """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id             TEXT PRIMARY KEY,
+            thread_id      TEXT NOT NULL,
+            from_id        TEXT NOT NULL,
+            from_title     TEXT NOT NULL,
+            to_id          TEXT NOT NULL,
+            to_title       TEXT NOT NULL,
+            kind           TEXT NOT NULL,   -- 'question' | 'reply'
+            in_reply_to    TEXT,
+            body           TEXT NOT NULL,
+            status         TEXT NOT NULL,   -- unread | read | answered | consumed
+            created_at     TEXT NOT NULL,
+            blocking_until REAL             -- epoch; questions only
         )
-        conn.commit()
-    finally:
-        os.umask(previous_umask)
-        agent_chat_v2.repair_storage_modes(path)
+        """
+    )
+    conn.commit()
     return conn
 
 
@@ -394,11 +375,6 @@ def main(argv=None):
 
     w = sub.add_parser("whoami", help="print resolved self identity")
     w.set_defaults(func=cmd_whoami)
-
-    # Agent Chat v2 is additive. Its storage and JSON protocol live in a
-    # separate module so the v1 question/reply path above remains unchanged
-    # for one compatibility cycle.
-    agent_chat_v2.add_parsers(sub)
 
     args = p.parse_args(argv)
     sys.exit(args.func(args) or 0)

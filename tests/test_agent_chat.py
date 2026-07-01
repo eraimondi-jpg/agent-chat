@@ -42,7 +42,6 @@ class AgentChatTest(unittest.TestCase):
 
     def question_id_for(self, identity):
         out = self.run_cli("inbox", "--json", identity=identity)
-        self.assertEqual(out.returncode, 0, out.stderr)
         rows = json.loads(out.stdout)
         return rows[0]["id"] if rows else None
 
