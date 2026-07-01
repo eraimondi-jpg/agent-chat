@@ -1830,8 +1830,11 @@ def _target_transport(target_id: str) -> dict[str, Any]:
 def _wake_control_text(conversation_id: str, source_seq: int) -> str:
     return (
         f"[agent-chat] New panel activity in conversation {conversation_id} through "
-        f"sequence {source_seq}. Handle it only in Agent Chat: "
-        f"agent-chat read {conversation_id}. Finish this pane with exactly: "
+        f"sequence {source_seq}. Read and reply only in that Agent Chat conversation: "
+        f"agent-chat read {conversation_id}; "
+        f'agent-chat say {conversation_id} "<message>". '
+        "Do not quote, summarize, discuss, or announce progress in this pane. "
+        "Finish this pane with exactly: "
         "Agent Chat message handled."
     )
 

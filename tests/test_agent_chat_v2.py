@@ -664,9 +664,17 @@ class AgentChatV2Test(unittest.TestCase):
         self.assertNotIn("TOP SECRET BODY", control)
         self.assertNotIn("\n", control)
         self.assertIn(started["conversation_id"], control)
-        self.assertIn("Handle it only in Agent Chat", control)
+        self.assertIn("Read and reply only in that Agent Chat conversation", control)
         self.assertIn(
             f"agent-chat read {started['conversation_id']}",
+            control,
+        )
+        self.assertIn(
+            f'agent-chat say {started["conversation_id"]} "<message>"',
+            control,
+        )
+        self.assertIn(
+            "Do not quote, summarize, discuss, or announce progress in this pane",
             control,
         )
         self.assertEqual(control.count("Agent Chat message handled."), 1)

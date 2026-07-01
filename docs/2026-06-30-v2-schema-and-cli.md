@@ -67,11 +67,11 @@ lease metadata, but the already-started control message may still arrive.
 
 Every v2 wake remains body-free and tells the recipient to handle and reply in
 Agent Chat only. The single-line control turn contains the immutable
-conversation/sequence pointer, `agent-chat read <conversation-id>`, and the
-neutral acknowledgement requirement. Managed agent instructions require replies
-through `agent-chat say <conversation-id> "<message>"` and forbid quoting,
-summarizing, discussing, or answering the chat in working-pane prose. After
-handling the message, the recipient finishes that pane with exactly:
+conversation/sequence pointer, `agent-chat read <conversation-id>`,
+`agent-chat say <conversation-id> "<message>"`, the prohibition against pane
+narration, and the neutral acknowledgement requirement. Managed agent
+instructions reinforce the same rule. After handling the message, the recipient
+finishes that pane with exactly:
 
 ```text
 Agent Chat message handled.
