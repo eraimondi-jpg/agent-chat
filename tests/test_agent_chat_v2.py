@@ -393,6 +393,234 @@ class AgentChatV2Test(unittest.TestCase):
         )
         self.assertEqual(self.aoe_calls(), [])
 
+    def test_gm_broadcast_lazily_creates_one_message_and_targets_every_participant(
+        self,
+    ):
+        result = self.ok(
+            "broadcast",
+            "Team",
+            "GM announcement",
+            "--profile",
+            "work",
+            "--idempotency-key",
+            "gm-broadcast",
+            "--actor",
+            "general-manager",
+            "--no-doorbell",
+            "--json",
+        )
+        self.assertEqual((result["generation"], result["post_seq"]), (1, 1))
+        self.assertEqual(
+            {wake["target_id"] for wake in result["wake_ids"]},
+            {"pm-work", "worker-1", "worker-2"},
+        )
+        posts = self.db_rows(
+            "SELECT * FROM posts WHERE conversation_id=?",
+            (result["conversation_id"],),
+        )
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["body"], "GM announcement")
+        self.assertEqual(len(self.db_rows("SELECT * FROM wake_requests")), 3)
+        self.assertEqual(self.aoe_calls(), [])
+
+    def test_participant_broadcast_is_body_free_and_excludes_sender_and_muted_members(
+        self,
+    ):
+        started = self.gm_start()
+        conn = sqlite3.connect(self.db)
+        conn.execute(
+            "UPDATE participants SET muted=1 WHERE conversation_id=? AND session_id='worker-2'",
+            (started["conversation_id"],),
+        )
+        conn.commit()
+        conn.close()
+        result = self.ok(
+            "broadcast",
+            "Team",
+            "BROADCAST SECRET @everyone",
+            "--profile",
+            "work",
+            "--idempotency-key",
+            "worker-broadcast",
+            "--json",
+            identity="worker-1:Worker One",
+        )
+        self.assertEqual(
+            result["wake_ids"],
+            [{"target_id": "pm-work", "wake_id": result["wake_ids"][0]["wake_id"]}],
+        )
+        calls = self.aoe_calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ["send", "pm-work"])
+        self.assertNotIn("BROADCAST SECRET", calls[0][2])
+        self.assertIn(result["conversation_id"], calls[0][2])
+
+    def test_broadcast_replay_redrives_exact_wakes_without_duplicate_post_or_send(self):
+        started = self.gm_start()
+        base = (
+            "broadcast",
+            "Team",
+            "replay broadcast",
+            "--profile",
+            "work",
+            "--idempotency-key",
+            "broadcast-replay",
+        )
+        first = self.ok(
+            *base,
+            "--no-doorbell",
+            "--json",
+            identity="worker-1:Worker One",
+        )
+        expected_ids = {
+            wake["target_id"]: wake["wake_id"] for wake in first["wake_ids"]
+        }
+        self.assertEqual(set(expected_ids), {"pm-work", "worker-2"})
+        stored = json.loads(
+            self.db_rows(
+                "SELECT response_json FROM idempotency_results "
+                "WHERE idempotency_key='broadcast-replay'"
+            )[0]["response_json"]
+        )
+        self.assertEqual(stored["wake_ids"], first["wake_ids"])
+        replay = self.ok(*base, "--json", identity="worker-1:Worker One")
+        self.assertEqual(replay, first)
+        self.assertEqual(
+            {wake["target_id"]: wake["wake_id"] for wake in replay["wake_ids"]},
+            expected_ids,
+        )
+        self.assertEqual(len(self.aoe_calls()), 2)
+        self.assertEqual(
+            len(
+                self.db_rows(
+                    "SELECT * FROM posts WHERE conversation_id=?",
+                    (started["conversation_id"],),
+                )
+            ),
+            2,
+        )
+        third = self.ok(
+            *base,
+            "--json",
+            identity="worker-1:Worker One",
+            env={"AGENT_CHAT_AOE_SESSIONS_JSON": "[]"},
+        )
+        self.assertEqual(third, first)
+        self.assertEqual(len(self.aoe_calls()), 2)
+
+    def test_failed_broadcast_wakes_are_redriven_by_exact_same_key(self):
+        started = self.gm_start()
+        args = (
+            "broadcast",
+            "Team",
+            "retry every target",
+            "--profile",
+            "work",
+            "--idempotency-key",
+            "broadcast-failed-retry",
+            "--json",
+        )
+        first = self.ok(
+            *args,
+            identity="worker-1:Worker One",
+            env={"FAKE_AOE_EXIT": "7"},
+        )
+        wake_ids = {wake["wake_id"] for wake in first["wake_ids"]}
+        failed = self.db_rows("SELECT * FROM wake_requests ORDER BY target_id")
+        self.assertEqual({wake["id"] for wake in failed}, wake_ids)
+        self.assertTrue(all(wake["state"] == "failed" for wake in failed))
+        self.assertTrue(all(wake["attempt_count"] == 1 for wake in failed))
+
+        replay = self.ok(*args, identity="worker-1:Worker One")
+        self.assertEqual(replay, first)
+        delivered = self.db_rows("SELECT * FROM wake_requests ORDER BY target_id")
+        self.assertEqual({wake["id"] for wake in delivered}, wake_ids)
+        self.assertTrue(all(wake["state"] == "delivered" for wake in delivered))
+        self.assertTrue(all(wake["attempt_count"] == 2 for wake in delivered))
+        self.assertEqual(
+            len(
+                self.db_rows(
+                    "SELECT * FROM posts WHERE conversation_id=?",
+                    (started["conversation_id"],),
+                )
+            ),
+            2,
+        )
+        self.assertEqual(len(self.aoe_calls()), 4)
+
+    def test_capabilities_advertise_explicit_group_broadcast(self):
+        capabilities = self.ok("capabilities", "--json")
+        self.assertIn("group_broadcast", capabilities["capabilities"])
+
+    def test_successive_broadcasts_coalesce_per_target_without_losing_exact_ids(self):
+        started = self.gm_start()
+        first = self.ok(
+            "broadcast",
+            "Team",
+            "first broadcast",
+            "--profile",
+            "work",
+            "--idempotency-key",
+            "broadcast-one",
+            "--no-doorbell",
+            "--json",
+            identity="worker-1:Worker One",
+        )
+        second = self.ok(
+            "broadcast",
+            "Team",
+            "second broadcast",
+            "--profile",
+            "work",
+            "--idempotency-key",
+            "broadcast-two",
+            "--no-doorbell",
+            "--json",
+            identity="worker-1:Worker One",
+        )
+        self.assertEqual(
+            {wake["target_id"]: wake["wake_id"] for wake in first["wake_ids"]},
+            {wake["target_id"]: wake["wake_id"] for wake in second["wake_ids"]},
+        )
+        wakes = self.db_rows("SELECT * FROM wake_requests ORDER BY target_id")
+        self.assertEqual(len(wakes), 2)
+        self.assertTrue(all(wake["source_seq"] == second["post_seq"] for wake in wakes))
+        self.assertEqual(
+            len(
+                self.db_rows(
+                    "SELECT * FROM posts WHERE conversation_id=?",
+                    (started["conversation_id"],),
+                )
+            ),
+            3,
+        )
+
+    def test_broadcast_rejects_nonparticipant_without_writing(self):
+        started = self.gm_start()
+        self.error(
+            "not_a_participant",
+            "broadcast",
+            "Team",
+            "intrusion",
+            "--profile",
+            "work",
+            "--idempotency-key",
+            "outsider-broadcast",
+            "--no-doorbell",
+            "--json",
+            identity="outsider:Outsider",
+        )
+        self.assertEqual(
+            len(
+                self.db_rows(
+                    "SELECT * FROM posts WHERE conversation_id=?",
+                    (started["conversation_id"],),
+                )
+            ),
+            1,
+        )
+        self.assertEqual(self.db_rows("SELECT * FROM wake_requests"), [])
+
     def test_revision_conflict_is_typed(self):
         started = self.gm_start()
         error = self.error(

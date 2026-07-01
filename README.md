@@ -63,6 +63,7 @@ The most important rule is that posting and waking are separate operations:
 ```text
 post / say          -> store only
 route / notify / nudge / sidechat start -> one targeted wake
+broadcast           -> one stored group post + one targeted wake per recipient
 ```
 
 Plain `@` text has no special wake behavior. Wake control messages contain only
@@ -72,6 +73,7 @@ Agent-facing examples:
 
 ```bash
 agent-chat post "AoE management" "status update" --profile default
+agent-chat broadcast "AoE management" "everyone read this" --profile default
 agent-chat room "AoE management" --profile default
 agent-chat say <conversation-id> "follow-up"
 agent-chat sidechat <other-session> "private opening" --group "AoE management"
@@ -142,6 +144,8 @@ Tests run without an aoe daemon (identities via `--from`, recipients via `id:tit
 - Targeted v2 wakes support terminal Claude and Codex sessions in the first
   release. Structured ACP and sandbox transports are follow-up work.
 - The first group panel release is native-TUI only.
+- Side chats require both agents to be active participants in the same parent
+  group. Cross-group side chats are not supported.
 - For rich threads, search, or file reservations, the upgrade path is
   [MCP Agent Mail](https://mcpagentmail.com/).
 

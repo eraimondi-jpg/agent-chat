@@ -25,6 +25,7 @@ Posting and giving an agent a turn are different operations.
 ```text
 post / say -> durable storage only
 explicit route / notify-moderator / sidechat start / nudge -> wake outbox
+explicit broadcast -> one durable group post + one wake per eligible participant
 ```
 
 An ordinary post, including one containing plain `@name` text, never invokes
@@ -38,6 +39,13 @@ group message to a dormant Project Manager; the normal AoE terminal send path
 can revive and permanently activate that PM. A worker can explicitly notify
 the moderator. Either side-chat participant can explicitly nudge the other
 participant. Starting a side chat has one explicit opening wake.
+
+`broadcast` is the explicit group-wide exception to ordinary post behavior. It
+stores exactly one shared message, then queues one body-free outbox wake for
+every active, unmuted participant except an agent sender. A General Manager is
+not a participant, so a GM broadcast includes every active, unmuted group
+participant. Any active participant or the GM may broadcast. The message body
+still remains solely in the conversation store.
 
 The first release dispatches wakes only to terminal Claude and Codex sessions.
 Structured ACP and sandbox transports are follow-up work. Delivery uses a
@@ -118,6 +126,8 @@ explicit audited rebind operation.
 Side-chat bodies are readable only by the two fixed participants. The GM/PM
 panel receives participant and activity metadata but an empty message window.
 There are no observer grants in this release.
+Both side-chat participants must belong to the same active parent group when
+the chat starts. Cross-group side chats are not supported in this release.
 
 ## Transactions, CAS, and idempotency
 
@@ -181,6 +191,25 @@ Mutation data has a stable shape:
 
 `generation` and `post_seq` are `null` when the operation has no corresponding
 value.
+
+A broadcast success extends mutation data with deterministic wake references:
+
+```json
+{
+  "conversation_id": "immutable-id",
+  "generation": 2,
+  "revision": 9,
+  "post_seq": 14,
+  "wake_ids": [
+    {"target_id": "agent-a", "wake_id": "outbox-id-a"},
+    {"target_id": "agent-b", "wake_id": "outbox-id-b"}
+  ]
+}
+```
+
+The whole result is committed in `idempotency_results.response_json` with the
+post. A same-key replay therefore re-drives those exact outbox rows without
+adding another post or reconstructing recipients from changed membership.
 
 ## AoE TUI commands
 
@@ -259,6 +288,7 @@ delivery; each delivery attempt remains shorter than its 45-second lease.
 
 ```text
 post <group> <message> [--profile <profile>]
+broadcast <group> <message> [--profile <profile>]
 say <conversation-id> <message>
 room <group> [--profile <profile>] [--since <seq>]
 read <conversation-id> [--since <seq>]
@@ -268,10 +298,12 @@ notify-moderator <conversation-id> [sequence]
 nudge <side-conversation-id> [sequence]
 ```
 
-`post` and `say` are always storage-only. `room` and `read` return bodies only
-to stored participants and advance that participant's cursor. `rooms` reports
-joined conversations and unread counts. Side-chat creation,
-`notify-moderator`, and `nudge` are explicit wake operations.
+`post` and `say` are always storage-only. `broadcast` is an explicit wake
+operation and may be issued by any active group participant or the General
+Manager. `room` and `read` return bodies only to stored participants and
+advance that participant's cursor. `rooms` reports joined conversations and
+unread counts. Side-chat creation, `notify-moderator`, and `nudge` are explicit
+wake operations.
 
 ## Stable first-release errors
 

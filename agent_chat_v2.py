@@ -14,8 +14,10 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -27,6 +29,7 @@ DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 GENERAL_MANAGER_ID = "general-manager"
 GENERAL_MANAGER_TITLE = "General Manager"
+STORAGE_OPEN_LOCK = threading.Lock()
 
 
 class ProtocolFault(Exception):
@@ -93,27 +96,30 @@ def repair_storage_modes(path: str) -> None:
 
 def _open_db() -> sqlite3.Connection:
     path = _db_path()
-    prepare_storage(path)
-    previous_umask = os.umask(0o077)
-    try:
-        conn = sqlite3.connect(path, timeout=30, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
-        _reject_unsupported_schema(conn)
-        for attempt in range(6):
-            try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                break
-            except sqlite3.OperationalError as error:
-                if "locked" not in str(error).lower() or attempt == 5:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        _ensure_schema(conn)
-    finally:
-        os.umask(previous_umask)
-        repair_storage_modes(path)
+    # os.umask is process-global. Serialize the short connection bootstrap so
+    # parallel broadcast delivery cannot restore another thread's umask.
+    with STORAGE_OPEN_LOCK:
+        prepare_storage(path)
+        previous_umask = os.umask(0o077)
+        try:
+            conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            _reject_unsupported_schema(conn)
+            for attempt in range(6):
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError as error:
+                    if "locked" not in str(error).lower() or attempt == 5:
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            _ensure_schema(conn)
+        finally:
+            os.umask(previous_umask)
+            repair_storage_modes(path)
     return conn
 
 
@@ -1676,6 +1682,7 @@ def cmd_capabilities(_args: argparse.Namespace) -> dict[str, Any]:
             "expected_revision",
             "idempotent_mutations",
             "coalesced_wake_outbox",
+            "group_broadcast",
         ],
         "wake_transports": ["terminal"],
         "ordinary_posts_wake": False,
@@ -1913,6 +1920,149 @@ def _deliver_wake(wake_id: str, *, enabled: bool = True) -> None:
         final_state = _immediate(conn, finish)
         if final_state != "pending":
             return
+
+
+def _broadcast_wake_refs(result: dict[str, Any]) -> list[dict[str, str]]:
+    refs = result.get("wake_ids", [])
+    if not isinstance(refs, list):
+        raise ProtocolFault(
+            "invalid_idempotency_result",
+            "stored broadcast wake references are invalid",
+        )
+    parsed = []
+    for ref in refs:
+        if (
+            not isinstance(ref, dict)
+            or not ref.get("wake_id")
+            or not ref.get("target_id")
+        ):
+            raise ProtocolFault(
+                "invalid_idempotency_result",
+                "stored broadcast wake references are invalid",
+            )
+        parsed.append(
+            {"wake_id": str(ref["wake_id"]), "target_id": str(ref["target_id"])}
+        )
+    parsed.sort(key=lambda ref: (ref["target_id"], ref["wake_id"]))
+    return parsed
+
+
+def _deliver_broadcast_wakes(
+    refs: list[dict[str, str]], *, enabled: bool = True
+) -> None:
+    if not enabled or not refs:
+        return
+    wake_ids = list(dict.fromkeys(ref["wake_id"] for ref in refs))
+    if len(wake_ids) == 1:
+        _deliver_wake(wake_ids[0], enabled=True)
+        return
+    # Delivery is best-effort and each target owns an independent outbox row.
+    # Parallel workers keep latency bounded by the slowest target rather than
+    # multiplying the transport timeout by group size.
+    with ThreadPoolExecutor(
+        max_workers=min(8, len(wake_ids)), thread_name_prefix="agent-chat-broadcast"
+    ) as executor:
+        futures = [
+            executor.submit(_deliver_wake, wake_id, enabled=True)
+            for wake_id in wake_ids
+        ]
+        for future in futures:
+            try:
+                future.result()
+            except (OSError, ProtocolFault, sqlite3.Error):
+                # The durable outbox remains available to an idempotent retry.
+                continue
+
+
+def cmd_broadcast(args: argparse.Namespace) -> dict[str, Any]:
+    """Store one group message, then explicitly wake every eligible participant."""
+    conn = _open_db()
+    actor_id, actor_title = _identity(args)
+    profile = _profile(args)
+    body = _body(args)
+    key = _key(args)
+    payload = {
+        "profile": profile,
+        "group_path": args.group,
+        "actor_id": actor_id,
+        "body": body,
+    }
+    cached = _cached_idempotent(conn, key, "broadcast", payload)
+    if cached is not None:
+        _deliver_broadcast_wakes(
+            _broadcast_wake_refs(cached), enabled=not args.no_doorbell
+        )
+        return cached
+
+    session_snapshot = _sessions(all_profiles=True)
+    members = _members_from_snapshot(session_snapshot, profile, args.group)
+    moderators = [member for member in members if member.get("is_project_manager")]
+    if len(moderators) != 1:
+        raise ProtocolFault(
+            "moderator_not_found" if not moderators else "moderator_ambiguous",
+            "the group must have exactly one Project Manager",
+            details={"profile": profile, "group_path": args.group},
+        )
+
+    def write() -> dict[str, Any]:
+        conversation = _active_for_live_group(
+            conn,
+            session_snapshot,
+            profile,
+            args.group,
+            moderators[0],
+            members,
+        )
+        if conversation is None:
+            owner_id = _logical_group_owner(
+                conn,
+                session_snapshot,
+                profile,
+                args.group,
+                str(moderators[0]["id"]),
+            )
+            conversation = _create_group(
+                conn,
+                profile,
+                args.group,
+                moderators[0],
+                members,
+                None,
+                owner_id,
+            )
+        if not _actor_is_gm(actor_id):
+            _require_participant(conn, conversation["id"], actor_id, active=True)
+        seq, revision = _insert_post(conn, conversation, actor_id, actor_title, body)
+        rows = conn.execute(
+            "SELECT session_id FROM participants WHERE conversation_id=? "
+            "AND left_at IS NULL AND muted=0 ORDER BY session_id",
+            (conversation["id"],),
+        ).fetchall()
+        wake_refs = []
+        for row in rows:
+            target_id = str(row["session_id"])
+            if not _actor_is_gm(actor_id) and target_id == actor_id:
+                continue
+            wake_refs.append(
+                {
+                    "target_id": target_id,
+                    "wake_id": _queue_wake(
+                        conn, conversation["id"], seq, actor_id, target_id
+                    ),
+                }
+            )
+        result = _mutation_result(
+            conversation["id"], conversation["generation"], revision, seq
+        )
+        result["wake_ids"] = wake_refs
+        return result
+
+    result, _ = _immediate(
+        conn, lambda: _idempotent(conn, key, "broadcast", payload, write)
+    )
+    refs = _broadcast_wake_refs(result)
+    _deliver_broadcast_wakes(refs, enabled=not args.no_doorbell)
+    return result
 
 
 def cmd_route(args: argparse.Namespace) -> dict[str, Any]:
@@ -2590,6 +2740,15 @@ def add_parsers(sub: argparse._SubParsersAction) -> None:  # type: ignore[type-a
     say.add_argument("--idempotency-key")
     _wire_options(say)
     _v2(say, cmd_say)
+
+    broadcast = sub.add_parser(
+        "broadcast", help="store one group message and explicitly wake all participants"
+    )
+    broadcast.add_argument("group")
+    broadcast.add_argument("message")
+    broadcast.add_argument("--profile")
+    _mutation_options(broadcast, revision=False, doorbell=True)
+    _v2(broadcast, cmd_broadcast)
 
     route = sub.add_parser("route", help="explicitly wake one group participant")
     route.add_argument("conversation_id")
